@@ -24,6 +24,50 @@ const HEADERS_TO_STRIP = new Set([
 
 const app = new Hono<{ Bindings: AppBindings }>();
 
+// --- Path Guard ---
+// Reject unknown paths/methods early to minimize wasted invocations from
+// crawlers, vulnerability scanners, and bot traffic. Only registered routes
+// are allowed through. For zero-invocation blocking, pair with a Cloudflare
+// WAF custom rule matching the same allowlist.
+
+// Paths that accept HEAD pre-flight probes (Claude Code, Bun, etc.)
+const HEAD_ALLOWED_PREFIXES = new Set(["/anthropic", "/message"]);
+
+// Known route prefixes — anything else is crawler/scanner noise
+const ALLOWED_PREFIXES = [
+  "/message",
+  "/status",
+  "/toggle",
+  "/force-subagent-thinking",
+  "/anthropic",
+];
+
+app.use("*", async (c, next) => {
+  const { method, path } = c.req;
+
+  // HEAD: only allow for paths where clients legitimately probe before POST/GET
+  if (method === "HEAD") {
+    const allowed = [...HEAD_ALLOWED_PREFIXES].some(
+      (prefix) => path === prefix || path.startsWith(prefix + "/") || path.startsWith(prefix + "?"),
+    );
+    if (!allowed) {
+      return c.text("Forbidden", 403);
+    }
+  } else if (method !== "GET" && method !== "POST") {
+    return c.text("Forbidden", 403);
+  }
+
+  // Block unknown path prefixes
+  const pathAllowed = ALLOWED_PREFIXES.some(
+    (prefix) => path === prefix || path.startsWith(prefix + "/") || path.startsWith(prefix + "?"),
+  );
+  if (!pathAllowed) {
+    return c.text("Forbidden", 403);
+  }
+
+  await next();
+});
+
 // --- Helpers ---
 
 async function getForceSubagentThinking(
